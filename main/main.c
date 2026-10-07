@@ -8,6 +8,7 @@
 #include "bsp_sdcard.h"
 #include "bsp_mic.h"
 #include "bsp_camera.h"
+#include "bsp_temp.h"
 #include "web_server.h"
 
 static const char *TAG = "app_main";
@@ -41,7 +42,11 @@ void app_main(void) {
     size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     ESP_LOGI(TAG, "[OK] PSRAM Total: %u bytes, Free: %u bytes", (unsigned int)psram_size, (unsigned int)psram_free);
 
-    // 4. 初始化 MicroSD 卡
+    // 4. 初始化片上温度传感器
+    bsp_temp_init();
+    ESP_LOGI(TAG, "[OK] On-chip temperature sensor ready (initial: %.1f C).", bsp_temp_get_celsius());
+
+    // 5. 初始化 MicroSD 卡
     bsp_sdcard_init();
 
     // 5. 初始化 MSM261D PDM 麦克风
