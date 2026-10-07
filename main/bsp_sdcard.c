@@ -54,21 +54,33 @@ bool bsp_sdcard_is_mounted(void) {
     return s_is_mounted;
 }
 
+#include "esp_timer.h"
+
+static uint64_t s_cached_total = 0;
+static uint64_t s_cached_free = 0;
+static int64_t s_last_query_us = 0;
+
 void bsp_sdcard_get_info(uint64_t *total_bytes, uint64_t *free_bytes) {
     if (!s_is_mounted) {
         if (total_bytes) *total_bytes = 0;
         if (free_bytes) *free_bytes = 0;
         return;
     }
-    FATFS *fs;
-    DWORD fre_clust, fre_sect, tot_sect;
-    if (f_getfree("0:", &fre_clust, &fs) == FR_OK) {
-        tot_sect = (fs->n_fatent - 2) * fs->csize;
-        fre_sect = fre_clust * fs->csize;
-        if (total_bytes) *total_bytes = ((uint64_t)tot_sect) * 512;
-        if (free_bytes) *free_bytes = ((uint64_t)fre_sect) * 512;
-    } else {
-        if (total_bytes) *total_bytes = 0;
-        if (free_bytes) *free_bytes = 0;
+
+    int64_t now = esp_timer_get_time();
+    // 缓存 5 秒 (5,000,000 微秒)，避免高频轮询引起频繁 FAT 遍历
+    if (s_last_query_us == 0 || (now - s_last_query_us) > 5000000LL) {
+        FATFS *fs;
+        DWORD fre_clust, fre_sect, tot_sect;
+        if (f_getfree("0:", &fre_clust, &fs) == FR_OK) {
+            tot_sect = (fs->n_fatent - 2) * fs->csize;
+            fre_sect = fre_clust * fs->csize;
+            s_cached_total = ((uint64_t)tot_sect) * 512;
+            s_cached_free = ((uint64_t)fre_sect) * 512;
+            s_last_query_us = now;
+        }
     }
+
+    if (total_bytes) *total_bytes = s_cached_total;
+    if (free_bytes) *free_bytes = s_cached_free;
 }

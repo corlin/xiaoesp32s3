@@ -14,7 +14,9 @@ static const char *TAG = "app_main";
 
 static void heartbeat_task(void *pvParameters) {
     while (1) {
-        bsp_led_toggle();
+        if (!bsp_sdcard_is_mounted()) {
+            bsp_led_toggle();
+        }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
