@@ -16,6 +16,7 @@
 #include "esp_heap_caps.h"
 
 static const char *TAG = "web_server";
+static httpd_handle_t s_camera_httpd = NULL;
 static httpd_handle_t s_stream_httpd = NULL;
 
 #define PART_BOUNDARY "123456789000000000000987654321"
@@ -35,7 +36,7 @@ static const char INDEX_HTML[] =
 ".stat{background:#2a2a2a;padding:12px;border-radius:8px}.stat-v{font-size:18px;font-weight:bold;color:#29b6f6}"
 "</style></head><body>"
 "<h1>XIAO ESP32-S3 Sense 综合测试控制台</h1>"
-"<div class='card'><img id='stream' src='/stream' alt='实时视频流'/></div>"
+"<div class='card'><img id='stream' src='' alt='实时视频流'/></div>"
 "<div class='card'><h3>麦克风实时音频电平</h3><div class='bar-box'><div id='mic-bar' class='bar'></div></div><span id='mic-val'>0%</span></div>"
 "<div class='card'><h3>系统与硬件运行状态</h3><div class='grid'>"
 "<div class='stat'><div>8MB PSRAM 剩余</div><div class='stat-v' id='psram'>-</div></div>"
@@ -44,6 +45,7 @@ static const char INDEX_HTML[] =
 "<div class='stat'><div>开机时长</div><div class='stat-v' id='uptime'>-</div></div>"
 "</div></div>"
 "<script>"
+"document.getElementById('stream').src = location.protocol + '//' + location.hostname + ':81/stream';"
 "setInterval(()=>{fetch('/api/status').then(r=>r.json()).then(d=>{"
 "document.getElementById('mic-bar').style.width=d.mic_level+'%';"
 "document.getElementById('mic-val').innerText=d.mic_level+'%';"
@@ -51,7 +53,7 @@ static const char INDEX_HTML[] =
 "document.getElementById('sram').innerText=(d.free_sram/1024).toFixed(1)+' KB';"
 "document.getElementById('sd').innerText=d.sd_mounted?('已挂载 ('+(d.sd_total/1024/1024).toFixed(0)+' MB)'):'未插卡';"
 "document.getElementById('uptime').innerText=d.uptime+' 秒';"
-"});},500);"
+"}).catch(e=>console.warn(e));},500);"
 "</script></body></html>";
 
 static esp_err_t index_handler(httpd_req_t *req) {
@@ -60,7 +62,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
-    char json[256];
+    char json[512];
     uint64_t sd_tot = 0, sd_free = 0;
     bsp_sdcard_get_info(&sd_tot, &sd_free);
     snprintf(json, sizeof(json),
@@ -142,22 +144,52 @@ static void wifi_init_softap(void) {
 esp_err_t web_server_start(void) {
     wifi_init_softap();
 
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.server_port = 80;
-    config.ctrl_port = 32768;
+    // 1. Control & API HTTP Server on Port 80
+    httpd_config_t config_camera = HTTPD_DEFAULT_CONFIG();
+    config_camera.server_port = 80;
+    config_camera.ctrl_port = 32768;
 
-    if (httpd_start(&s_stream_httpd, &config) == ESP_OK) {
-        httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler };
-        httpd_register_uri_handler(s_stream_httpd, &index_uri);
-
-        httpd_uri_t status_uri = { .uri = "/api/status", .method = HTTP_GET, .handler = status_handler };
-        httpd_register_uri_handler(s_stream_httpd, &status_uri);
-
-        httpd_uri_t stream_uri = { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler };
-        httpd_register_uri_handler(s_stream_httpd, &stream_uri);
-
-        ESP_LOGI(TAG, "Web server started on port 80");
-        return ESP_OK;
+    if (httpd_start(&s_camera_httpd, &config_camera) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start control HTTP server on port 80");
+        return ESP_FAIL;
     }
-    return ESP_FAIL;
+
+    httpd_uri_t index_uri = {
+        .uri      = "/",
+        .method   = HTTP_GET,
+        .handler  = index_handler,
+        .user_ctx = NULL,
+    };
+    httpd_register_uri_handler(s_camera_httpd, &index_uri);
+
+    httpd_uri_t status_uri = {
+        .uri      = "/api/status",
+        .method   = HTTP_GET,
+        .handler  = status_handler,
+        .user_ctx = NULL,
+    };
+    httpd_register_uri_handler(s_camera_httpd, &status_uri);
+
+    // 2. Dedicated MJPEG Video Stream HTTP Server on Port 81
+    httpd_config_t config_stream = HTTPD_DEFAULT_CONFIG();
+    config_stream.server_port = 81;
+    config_stream.ctrl_port = 32769;
+
+    if (httpd_start(&s_stream_httpd, &config_stream) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start stream HTTP server on port 81");
+        httpd_stop(s_camera_httpd);
+        s_camera_httpd = NULL;
+        return ESP_FAIL;
+    }
+
+    httpd_uri_t stream_uri = {
+        .uri      = "/stream",
+        .method   = HTTP_GET,
+        .handler  = stream_handler,
+        .user_ctx = NULL,
+    };
+    httpd_register_uri_handler(s_stream_httpd, &stream_uri);
+
+    ESP_LOGI(TAG, "Web servers started: Control/API on port 80, Stream on port 81");
+    return ESP_OK;
 }
